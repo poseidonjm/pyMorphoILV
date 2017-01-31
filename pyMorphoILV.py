@@ -11,13 +11,34 @@ import atexit
 from threading import Thread
 import threading
 
-class Morpho(object):
-  def __init__(self, vendID=0x079b, prodID=0x0024, baudrate=38400, endPOut=0x02, endPIn = 0x83):
-    print "Inicializando instancia Morpho Reader"
+def_vendID=0x079b
+def_prodID=0x0024
+def_baudrate=38400
+def_endPOut=0x02
+def_endPIn=0x83
+
+knownMorphoTerminals = [
+                         {'name':'MSO300',  'prodID':0x0024},
+                         {'name':'CBM OEM', 'prodID':0x0047}
+                       ]
+
+class Terminal(object):
+  def __init__(self, vendID=def_vendID, prodID=0, baudrate=def_baudrate, endPOut=def_endPOut, endPIn = def_endPIn):
+    print "Starting Morpho Terminal"
     # Look for a specific device and open it
-    dev = usb.core.find(idVendor=vendID, idProduct=prodID) # Morpho Bio Reader
-    if dev is None:
-      raise ValueError('Device not found')
+    if prodID == 0:
+      found = searchTerminal()
+      if len(found)==0:
+        raise ValueError('No morpho terminal found!!')
+      else:
+        print found[0][1]
+        dev = found[0][0]
+        baudrate, endPOut, endPIn = paramsFromFound(found[0][1])
+#        print "Found! inicializar %d,%d,%d"%(baudrate, endPOut, endPIn)
+    else:
+      dev = usb.core.find(idVendor=vendID, idProduct=prodID)
+      if dev is None:
+        raise ValueError('Requested morpho terminal not found!!')
 
     # Detach interfaces if Linux already attached a driver on it.
     for itf_num in [0, 1]:
@@ -30,9 +51,8 @@ class Morpho(object):
 
     # set control line state 0x2221
     # set line encoding 0x2021 (baudrate, 8N1)
-    #
     extra = array.array('B', [0x00, 0x00, 0x08])
-    baud = self.int2array(baudrate)
+    baud = int2array(baudrate)
     baud.extend(extra)
 
     dev.ctrl_transfer(0x21, 0x22, 0x01 | 0x02, 0, None)
@@ -44,23 +64,31 @@ class Morpho(object):
     self.ILVCommand = 0x00
     atexit.register(self.exit_handler)
 
+  @classmethod
+  def fromFound(cls, found):
+     vendID = found[1]['vendID']
+     prodID = found[1]['prodID']
+     baudrate, endPOut, endPIn = paramsFromFound(found[1])
+     return cls(vendID, prodID, baudrate, endPOut, endPIn)
+
   def sendILV(self, data):
-# Enviar SYNC
+    # Send SYNC
     payload = headerData = bytearray(B"SYNC");
 
-# Enviar tamaño de datos y complemento a 2
+    # Send data size and two's complement
     dataSize = len(data);
     cDataSize = -(dataSize+1);
-    payload.extend(self.int2array(dataSize))
-    payload.extend(self.int2array(cDataSize))
-# Enviar comando
+    payload.extend(int2array(dataSize))
+    payload.extend(int2array(cDataSize))
+    # Send command
     payload.extend(data);
-# Enviar terminación
+    # Send EN
     tailData = bytearray("EN");
     payload.extend(tailData)
 
     self.lector.write(self.endPOut, payload, interface = 1)
-#    print "Enviando: ", ":".join("{:02x}".format(c,'02x') for c in payload)
+    if __debug__:
+      print "Sending: ", ":".join("{:02x}".format(c,'02x') for c in payload)
 
   def startRead(self, q):
     readThread = Thread(target=self.read, args=(q,))
@@ -74,43 +102,41 @@ class Morpho(object):
     while getattr(t, "do_run", True):
       try:
         data = self.lector.read(self.endPIn, 1024, interface = 1)
-#          print 'Back: "%s"' % ":".join("{:02x}".format(c) for c in data)
-        if not serialReading: #No estabamos leyendo, iniciar lectura en buffer
+        #print 'Back: "%s"' % ":".join("{:02x}".format(c) for c in data)
+        if not serialReading: #Start reading buffer
           if len(data) < 6:
-            out_q.put({'status':'Error','data':'Error de comunicación con lector biometrico'})
+            out_q.put({'status':'Error','data':'Comunication error with biometric reader'})
 	    continue
-          if data[0] == 0x53 and data[1] == 0x59 and data[2] == 0x4E and data[3] == 0x43: #Si viene el header iniciamos la lectura
-#	    print "'SYNC' encontrado"
-            if data[-1]==0x4E and data[-2]==0x45: #Si viene el final leimos el chunk completo
-#              print "Todo en un paquete ... Terminamos";
+          if data[0] == 0x53 and data[1] == 0x59 and data[2] == 0x4E and data[3] == 0x43: #Header found, start reading
+	    #print "'SYNC' found"
+            if data[-1]==0x4E and data[-2]==0x45: #End found, process complete chunk
               out_q.put(self.processILV(data, len(data), 12))
-            else: #Si no, iniciamos la lectura
-#              print "Inicializando el buffer"
+            else: #Else, start new reading buffer
               serialData    = data
               serialReading = True
             serialErrorReported = False
           else:
             if not serialErrorReported :
-              out_q.put({'status':'Error','data':"No se encontro 'SYNC'"})
+              out_q.put({'status':'Error','data':"'SYNC' not found"})
               serialErrorReported = True
         else:
           serialData.extend(data)
-          if data[-1]==0x4E and data[-2]==0x45: # Si viene el final terminamos de leer el chunk completo
- #           print "Fin lectura";
+          if data[-1]==0x4E and data[-2]==0x45: # End found, read completed
+            #print "reading ended"
             out_q.put(self.processILV(serialData, len(serialData), 12))
             serialReading = False
       except usb.core.USBError as e:
+        #print e
         pass
-#        print e
     print("Morpho Reading Stopped.")
 
 
-# Commandos
+  # Commands
   def getInfo(self):
     data = array.array('B', [0x05, 0x01, 0x00, 0x2F])
     self.sendILV(data)
 
-  def getImage(self):
+  def getFingerPrint(self):
 
     longitud	= 8+7+9+4
     base        = 0x00
@@ -121,43 +147,43 @@ class Morpho(object):
     guardar     = 0x00
     tamano      = 0x00
 
-# Image
+    # Image
     data = array.array('B', [0x21])
-    data.extend(self.short2array(longitud))
+    data.extend(short2array(longitud))
     data.extend(array.array('B',[base]))
-    data.extend(self.short2array(espera))
+    data.extend(short2array(espera))
     data.extend(array.array('B',[calidad, pasadas, dedos, guardar, tamano]))
-# ILV de Asynchronous event
+    #   Asynchronous event ILV
     idEvent	= 0x34 #ID_ASYNCHRONOUS_EVENT
     size	= 4
     command	= 0x03 #(COMMAND) | (IMAGE) // | ¿(CODE_QUALITY)?
 
     data.extend(array.array('B',[idEvent]))
-    data.extend(self.short2array(size))
+    data.extend(short2array(size))
     data.extend(array.array('B',[command, 0x00, 0x00, 0x00]))
 
-# ILV de Export Image
+    # Export Image ILV
     idEvent	= 0x3D #ID_EXPORT_IMAGE
     size	= 6
     imageType	= 0x00 #ID_DEFAULT_IMAGE
     
     data.extend(array.array('B',[idEvent]))
-    data.extend(self.short2array(size))
+    data.extend(short2array(size))
     data.extend(array.array('B',[imageType]))
-    #ILV de compresión
+    #  Compression ILV
     idEvent	= 0x3E #ID_COMPRESSION 
     size	= 2
     command	= 0x2C #ID_COMPRESSION_NULL
     data.extend(array.array('B',[idEvent]))
-    data.extend(self.short2array(size))
+    data.extend(short2array(size))
     data.extend(array.array('B',[command, 0x00]))
 
-# ILV de Huella latente
+    # Latent fingerprint ILV
     idEvent	= 0x39 #ID_LATENT_SETTING
     size	= 1
     command	= 0x01 #ENABLED
     data.extend(array.array('B',[idEvent]))
-    data.extend(self.short2array(size))
+    data.extend(short2array(size))
     data.extend(array.array('B',[command]))
     self.sendILV(data)
 
@@ -166,35 +192,15 @@ class Morpho(object):
     maximoRegistros   = 100;
 
     data = array.array('B', [0x30])
-    data.extend(self.short2array(longitud))
+    data.extend(short2array(longitud))
     data.extend(array.array('B',[0x00, 0x00]))
-    data.extend(self.short2array(maximoRegistros))
+    data.extend(short2array(maximoRegistros))
     data.extend(array.array('B',[0x02]))
     self.sendILV(data);
 
-  def borrarDB(self):    #TODO
+  def deleteDB(self):    #TODO
     data = array.array('B', [0x33, 0x01, 0x00, 0x00])
     self.sendILV(data);
-
-# Helpers
-  def int2array(self, i):
-    return [i >> n & 0xff for n in (0,8,16,24)]
-
-  def short2array(self, i):
-    return [i >> n & 0xff for n in (0,8)]
-
-
-
-#Misc / closing
-  def exit_handler(self):
-    self.close()
-  def close(self):
-    if hasattr(self, 'readThread'):
-      print "Terminando Hilo"
-      self.readThread.do_run = False
-      self.readThread.join()
-      del(self.readThread)
-    usb.util.dispose_resources(self.lector)
     
   def processILV(self, buffer, size, offset):
     ILV_OK 		= 0x00
@@ -209,88 +215,85 @@ class Morpho(object):
     ILVSTS_MOIST_FINGER	= 0x23;
 
     if buffer[offset] == 0x50:
-      print "Comando ILV invalido"
+      print "Invalid ILV command"
     else:
       code = buffer[offset];
       longitud = (buffer[offset+1]&0xFF) + ((buffer[offset+2]<<8)&0xFF00);
-      if longitud==65535: # Mensaje con longitud mayor, usar 4 bytes
+      if longitud==65535: # Bigger message, use 4 bytes
         offset+=2
 	longitud = (buffer[offset+1]&0xFF) + ((buffer[offset+2]<<8)&0xFF00) + ((buffer[offset+3]<<16)&0xFF0000) + ((buffer[offset+4]<<24)&0xFF000000)
 	offset+=2
-#      print "Longitud de comando ILV = ", str(longitud)
+      #print "ILV command Length = ", str(longitud)
       status = 0xFF
       if longitud>0:
         status = buffer[offset+3]
-      if code == 0x71: # Comando de "Asynchronous Message"
+      if code == 0x71: # "Asynchronous Message" Command
         if status != ILV_OK:
-	  return {'status':'Error', 'data':'Mensaje asincrono con error'}
+	  return {'status':'Error', 'data':'Erroneous asyncronous message'}
         self.ILVCommand = code;
         if longitud>6:
           return self.processILV(buffer, size, offset+4)
-#      print "code:", str(code)
-      # Ejecutamos cuando ya se cargo ILVCommand en iteración anterior
-      if self.ILVCommand == 0x71: # Mensaje asincrono
-#        print "Mensaje asincrono2"
+      #print "code:", str(code)
+      # Execute when ILVCommand already loaded on previous iteration
+      if self.ILVCommand == 0x71: # Asynchronous message
         self.ILVCommand = code;
-        if   code == 0x01: # Mensaje de control
+        if   code == 0x01: # Control message
           pass
-        elif code == 0x02: # Mensaje imagen asincrona
+        elif code == 0x02: # Asynchronous image message
           return {'status':'huella', 'data': self.processImage(buffer, offset)}
 	else:
-          print "Mensaje asincrono desconocido"
+          print "Unknown asynchronous message"
         return;
-      if code == 0x22: # Comando de identificacion
+      if code == 0x22: # Identification command
         if status != ILV_OK:
-          print "Codig error %d" % status
+          print "Error code %d" % status
 	  if status != ILVERR_CMDE_ABORTED:
-            print "Error del dispositivo biometrico, intente de nuevo"
+            print "Biometric device error, please try again"
           return;
         if buffer[offset+4]==ILVSTS_HIT:
           dbIdx = buffer[offset+5]+(buffer[offset+6]<<8)+(buffer[offset+7]<<16)+(buffer[offset+8]<<24)
-          print "Usuario identificado"
+          print "Identified user"
           ILVCommand = code
           if longitud>6:
             self.processILV(buffer, size, offset+9)
         else:
-          print "Usuario No identificado"
+          print "Unidentified user"
         return
-      if code == 0x21: # Comando de enrolado
+      if code == 0x21: # Enrol command
         ILVCommand = code
         if status != ILV_OK:
-          print "Codig error %d" % status
+          print "Error code %d" % status
           if status != ILVERR_CMDE_ABORTED:
-            print "Error del dispositivo biometrico, intente de nuevo"
+            print "Biometric device error, please try again"
 	  return
         if buffer[offset+4]==ILVSTS_OK:
           dbIdx = buffer[offset+5]+(buffer[offset+6]<<8)+(buffer[offset+7]<<16)+(buffer[offset+8]<<24)
-#          print "Usuario enrolado correctamente"
+          #print "User correctly enrolled"
           ILVCommand = code
           if longitud>6:
             return self.processILV(buffer, size, offset+9)
         else:
-          print "Usuario No enrolado, intentar nuevamente"
+          print "User not enrolled, please try again"
 	return
-      if code == 0x3d: # Comando de imagen
+      if code == 0x3d: # Image command
         ILVCommand = code
-#        print "Recibimos huella final"
+        #print "Final fingerprint received"
         return {'status':'huellaf', 'data': self.processImage(buffer, offset)}
   '''
 				
 /*				if(status != ILV_OK){
-					hRefresh.sendEmptyMessage(GUI_ENROL_FREE_ERROR);
-					Log.v("PFfingerScan","Codigo de respuesta: "+Integer.toHexString(0xFF & status));
+					print "Codigo de respuesta: "+Integer.toHexString(0xFF & status);
 					if(status != ILVERR_CMDE_ABORTED)mostrarMensaje("Error del dispositivo biometrico, intente de nuevo");
 					return;
 				}
 				if(buffer[offset+4]==ILVSTS_OK){
-					hRefresh.sendEmptyMessage(GUI_ENROL_FREE);
 					int dbIdx = buffer[offset+5]+(buffer[offset+6]<<8)+(buffer[offset+7]<<16)+(buffer[offset+8]<<24);
-					Log.v("PFfingerScan","Usuario enrolado correctamente");
+					print "Usuario enrolado correctamente");
 					ILVCommand = code;
 					if(longitud>6)processILV(buffer, size, offset+9);
 				}else{
 					hRefresh.sendEmptyMessage(GUI_ENROL_FREE_ERROR);
-					Log.v("PFfingerScan","Usuario No enrolado");
+					print "Usuario No enrolado");
 					mostrarMensaje("No enrolado, intente nuevamente");
 //					mostrarResultadoHuella(false,"");
 				}
@@ -313,20 +316,15 @@ class Morpho(object):
 						return;
 					}
 				}else{
-			        Map<String, Object> params = new HashMap<String, Object>();
-			        params.put("Pi_expediente", userID);
-			        params.put("Pi_evento", runningOP);
-			        params.put("Pi_ubicacion", 1);
 			        try{
 			        	RespuestaSiNo respuesta = servicio.llamarServicioSiNo("registrarEvento", params);
-			        	Log.v("PFfingerScan","Respuesta registro evento: " + respuesta.respuesta);
+			        	print "Respuesta registro evento: " + respuesta.respuesta);
 			        }catch (Exception e) {
 						// TODO: handle exception
 					}
-			        hRefresh.sendEmptyMessage(GUI_MAIN_FREE);
 				}
 				mostrarResultadoHuella(true,""+userID);
-				Log.v("PFfingerScan", userID +" identificado correctamente");
+				print userID +" identificado correctamente";
 //				mostrarMensaje(userID +" identificado correctamente");
 				return;
 			}
@@ -334,7 +332,7 @@ class Morpho(object):
 	}
   '''
   def processImage(self, buffer, offset):
-    headerSize		= buffer[offset+4]; # Debe ser 0x0A
+    headerSize		= buffer[offset+4]; # Must be 0x0A
     rowNumber		= (buffer[offset+5]&0xFF) + ((buffer[offset+6]<<8)&0xFF00)
     colNumber		= (buffer[offset+7]&0xFF) + ((buffer[offset+8]<<8)&0xFF00)
     vertRes		= (buffer[offset+9]&0xFF) + ((buffer[offset+10]<<8)&0xFF00)
@@ -343,7 +341,55 @@ class Morpho(object):
     compressionParam 	= buffer[offset+14]
     imgSize		= rowNumber*colNumber
     offset+=15
-#    print "----Datos imagen---- \nrowNumber: %d \ncolNumber: %d \nvertRes: %d \nhorzRes: %d \n%d \n%d" % (rowNumber, colNumber, vertRes, horzRes, compression, compressionParam)
+#    print "----Image data---- \nrowNumber: %d \ncolNumber: %d \nvertRes: %d \nhorzRes: %d \n%d \n%d" % (rowNumber, colNumber, vertRes, horzRes, compression, compressionParam)
     huella = buffer[offset:offset+imgSize]
     return {'rowNumber':rowNumber, 'colNumber':colNumber, 'huella':huella}
 
+  #Misc / closing
+  def exit_handler(self):
+    self.close()
+
+  def close(self):
+    if hasattr(self, 'readThread'):
+      print "Ending read Thread"
+      self.readThread.do_run = False
+      self.readThread.join()
+      del(self.readThread)
+    usb.util.dispose_resources(self.lector)
+
+def searchTerminal():
+  found = []
+  for terminal in knownMorphoTerminals:
+    if 'vendID' in terminal:
+      vendID = terminal['vendID']
+    else:
+      vendID = def_vendID
+      terminal['vendID'] = def_vendID
+    print "Searching %s : %d"% (terminal['name'], vendID) 
+    dev = usb.core.find(idVendor=vendID, idProduct=terminal['prodID'])
+    if dev is not None:
+      print "Found", terminal['name']
+      found.append([dev,terminal])
+  return found
+
+def paramsFromFound(data):
+  if 'baudrate' in data:
+    baudrate = data['baudrate']
+  else:
+    baudrate = def_baudrate
+  if 'endPOut' in data:
+    endPOut = data['endPOut']
+  else:
+    endPOut = def_endPOut
+  if 'endPIn' in data:
+    endPIn  = data['endPIn']  
+  else:
+    endPIn  = def_endPIn  
+  return baudrate, endPOut, endPIn  
+
+# Helpers
+def int2array(i):
+  return [i >> n & 0xff for n in (0,8,16,24)]
+
+def short2array(i):
+  return [i >> n & 0xff for n in (0,8)]
