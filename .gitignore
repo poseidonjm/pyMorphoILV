@@ -1,0 +1,5 @@
+build
+dist
+*.pyc
+fingerprint.raw
+setuptools_scm*
