@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+import sys
+import traceback
 import usb.core
 import usb.util
 import usb.control
@@ -11,15 +12,15 @@ import atexit
 from threading import Thread
 import threading
 
-def_vendID=0x079b
-def_prodID=0x0024
+def_vendID=0x225d
+def_prodID=0xa
 def_baudrate=38400
 def_endPOut=0x02
 def_endPIn=0x83
-
+#{'name':'CBM OEM', 'prodID':0x0047}
 knownMorphoTerminals = [
-                         {'name':'MSO300',  'prodID':0x0024},
-                         {'name':'CBM OEM', 'prodID':0x0047}
+                         {'name':'MSO300',  'prodID':0xa},
+                         
                        ]
 
 class Terminal(object):
@@ -34,7 +35,7 @@ class Terminal(object):
         print found[0][1]
         dev = found[0][0]
         baudrate, endPOut, endPIn = paramsFromFound(found[0][1])
-#        print "Found! inicializar %d,%d,%d"%(baudrate, endPOut, endPIn)
+        print "Found! inicializar %d,%d,%d"%(baudrate, endPOut, endPIn)
     else:
       dev = usb.core.find(idVendor=vendID, idProduct=prodID)
       if dev is None:
@@ -44,8 +45,9 @@ class Terminal(object):
     for itf_num in [0, 1]:
       itf = usb.util.find_descriptor(dev.get_active_configuration(),
                                   bInterfaceNumber=itf_num)
-      if dev.is_kernel_driver_active(itf):
-          dev.detach_kernel_driver(itf)
+      dev.set_configuration()
+      #if dev.is_kernel_driver_active(itf):
+      #    dev.detach_kernel_driver(itf)
       usb.util.claim_interface(dev, itf)
 
 
@@ -365,11 +367,19 @@ def searchTerminal():
     else:
       vendID = def_vendID
       terminal['vendID'] = def_vendID
-    print "Searching %s : %d"% (terminal['name'], vendID) 
-    dev = usb.core.find(idVendor=vendID, idProduct=terminal['prodID'])
+    print "Searching %s : %s, %s"% (terminal['name'], vendID, terminal['prodID']) 
+    try:
+      dev = usb.core.find(idVendor=vendID, idProduct=terminal['prodID'])
+    except:
+      e = sys.exc_info()[0]
+      print( "<p>Error: %s</p>" % e )
+      traceback.print_exc()
+    print "Searched %s : %s, %s"% (terminal['name'], vendID, terminal['prodID']) 
     if dev is not None:
       print "Found", terminal['name']
       found.append([dev,terminal])
+    else:
+      print "not found :("	
   return found
 
 def paramsFromFound(data):
