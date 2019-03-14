@@ -24,3 +24,4 @@ Test program with CLI included
 - [libusb for windows](https://sourceforge.net/projects/libusb-win32/files/libusb-win32-releases/1.2.6.0/)
 - [Python 2.7](https://www.python.org/downloads/release/python-2716/)
 - [Install pip on windows](https://stackoverflow.com/questions/4750806/how-do-i-install-pip-on-windows)
+- [PyUSB tutorial](https://github.com/walac/pyusb/blob/master/docs/tutorial.rst)
