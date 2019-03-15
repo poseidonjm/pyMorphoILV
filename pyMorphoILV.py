@@ -90,7 +90,7 @@ class Terminal(object):
 
     self.lector.write(self.endPOut, payload, interface = 1)
     if __debug__:
-      print "Sending: ", ":".join("{:02x}".format(c,'02x') for c in payload)
+      print "\nSending: ", ":".join("{:02x}".format(c,'02x') for c in payload),"\n"
 
   def startRead(self, q):
     readThread = Thread(target=self.read, args=(q,))
@@ -104,14 +104,15 @@ class Terminal(object):
     while getattr(t, "do_run", True):
       try:
         data = self.lector.read(self.endPIn, 1024, interface = 1)
-        #print 'Back: "%s"' % ":".join("{:02x}".format(c) for c in data)
+        print '\nBack: "%s"\n' % ":".join("{:02x}".format(c) for c in data)
         if not serialReading: #Start reading buffer
           if len(data) < 6:
             out_q.put({'status':'Error','data':'Comunication error with biometric reader'})
-	    continue
+            continue
           if data[0] == 0x53 and data[1] == 0x59 and data[2] == 0x4E and data[3] == 0x43: #Header found, start reading
-	    #print "'SYNC' found"
+            print "\n'SYNC' found\n"
             if data[-1]==0x4E and data[-2]==0x45: #End found, process complete chunk
+              print "\nEnd found, process complete chunk\n"
               out_q.put(self.processILV(data, len(data), 12))
             else: #Else, start new reading buffer
               serialData    = data
@@ -124,7 +125,7 @@ class Terminal(object):
         else:
           serialData.extend(data)
           if data[-1]==0x4E and data[-2]==0x45: # End found, read completed
-            #print "reading ended"
+            print "\n reading ended\n"
             out_q.put(self.processILV(serialData, len(serialData), 12))
             serialReading = False
       except usb.core.USBError as e:
@@ -136,6 +137,10 @@ class Terminal(object):
   # Commands
   def getInfo(self):
     data = array.array('B', [0x05, 0x01, 0x00, 0x2F])
+    self.sendILV(data)
+
+  def ping(self):
+    data = array.array('B', [0x08, 0x01, 0x00, 0x02])
     self.sendILV(data)
 
   def getFingerPrint(self):

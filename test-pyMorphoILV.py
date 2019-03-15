@@ -84,6 +84,8 @@ try:
       #morph.identify()
     elif entrada == "info":
       morph.getInfo()
+    elif entrada == "ping":
+      morph.ping()
     elif entrada == "exit":
       exit_handler()
     else:
