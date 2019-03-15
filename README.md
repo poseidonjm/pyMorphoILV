@@ -28,5 +28,5 @@ Test program with CLI included
 
 ## install packages
 - python get-pip.py
-- pip install pyusb
+- pip install pyusb==1.0.0b1
 - pip install pillow
